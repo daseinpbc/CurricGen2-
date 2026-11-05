@@ -17,6 +17,10 @@ const TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 24000;
 const MAX_TITLE_LENGTH = 80;
 const MAX_SOURCES = 10;
 
+// Optional: paste a key here ONLY if this repo is private. Normally leave it empty and
+// set the GEMINI_API_KEY environment variable in Netlify instead (it takes priority).
+const HARDCODED_API_KEY = '';
+
 const reply = (statusCode, body) => ({
   statusCode,
   headers: { 'Content-Type': 'application/json' },
@@ -80,14 +84,29 @@ function formatSources(sources) {
   return `\n\n## Sources used in research\n${items.join('\n')}`;
 }
 
+// Pull a short, safe explanation out of Google's error reply (links and long ID numbers removed).
+function googleReason(details) {
+  try {
+    const message = JSON.parse(details).error.message;
+    return String(message || '')
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/\d{6,}/g, '…')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 300);
+  } catch (e) {
+    return '';
+  }
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return reply(405, { error: 'Method not allowed.' });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || HARDCODED_API_KEY;
   if (!apiKey) {
-    console.error('GEMINI_API_KEY is not set in the Netlify environment variables.');
+    console.error('No API key found: set GEMINI_API_KEY in Netlify or fill in HARDCODED_API_KEY.');
     return reply(500, { error: 'The server is not configured correctly.' });
   }
 
@@ -124,10 +143,12 @@ exports.handler = async (event) => {
     if (!apiResponse.ok) {
       const details = await apiResponse.text().catch(() => '');
       console.error(`Gemini API error ${apiResponse.status} (model: ${model}):`, details.slice(0, 2000));
+      const reason = googleReason(details);
+      const why = reason ? ` Google says: ${reason}` : '';
       if (apiResponse.status === 429) {
-        return reply(429, { error: 'The AI service is busy right now. Please try again in a minute.' });
+        return reply(429, { error: `The AI service is busy or over its usage limit.${why}` });
       }
-      return reply(502, { error: `The AI service returned an error (status ${apiResponse.status}).` });
+      return reply(502, { error: `The AI service returned an error (status ${apiResponse.status}).${why}` });
     }
 
     const interaction = await apiResponse.json();
